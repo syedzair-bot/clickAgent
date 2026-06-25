@@ -1,4 +1,9 @@
 {
   "CLICKUP_API_KEY": "pk_290641496_EG1XWBSYSTUM25LS00OHSRKMW5MINWJK",
-  "CLICKUP_TEAM_ID": "90161564878"
+  "CLICKUP_TEAM_ID": "90161564878",
+  "TRACKED_REPOS": [
+    "/Users/syedmohdzair/DegrePartner/DT",
+    "/Users/syedmohdzair/DegrePartner/DTL",
+    "/Users/syedmohdzair/DegrePartner/AdminCMS"
+  ]
 }

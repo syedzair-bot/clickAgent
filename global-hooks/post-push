@@ -1,59 +1,71 @@
-#!/bin/bash
-# Global post-push hook — fires on every git push on this machine.
-# Reads tracked repo paths from config.json (set during install.sh).
+#!/usr/bin/env node
+// Global post-push hook — cross-platform (Mac, Linux, Windows)
+// Reads tracked repo paths from config.json set during install.
 
-HOOK_REAL="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
-AGENT_DIR="$(dirname "$(dirname "$HOOK_REAL")")"
-AGENT_SCRIPT="$AGENT_DIR/agent.mjs"
-CONFIG_FILE="$AGENT_DIR/config.json"
+import { execSync, spawn } from "child_process";
+import { readFileSync, existsSync } from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
-if [ ! -f "$AGENT_SCRIPT" ]; then
-  exit 0
-fi
+const __dir = path.dirname(fileURLToPath(import.meta.url));
+const AGENT_DIR = path.dirname(__dir);
+const AGENT_SCRIPT = path.join(AGENT_DIR, "agent.mjs");
+const CONFIG_FILE = path.join(AGENT_DIR, "config.json");
 
-REPO_PATH="$(git rev-parse --show-toplevel 2>/dev/null)"
-BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+if (!existsSync(AGENT_SCRIPT)) process.exit(0);
 
-# ── Check if this repo is in the tracked list ─────────────────────────────────
-IS_TRACKED=$(node - "$CONFIG_FILE" "$REPO_PATH" <<'JSEOF'
-const fs = require("fs");
-const [,, configFile, repoPath] = process.argv;
+// ── Resolve current repo ──────────────────────────────────────────────────────
+let repoPath, branch;
 try {
-  const cfg = JSON.parse(fs.readFileSync(configFile, "utf8"));
-  const tracked = cfg.TRACKED_REPOS || [];
-  // Match exact path or if the repo path starts with a tracked path
-  const match = tracked.some(p => repoPath === p || repoPath.startsWith(p + "/"));
-  process.stdout.write(match ? "yes" : "no");
+  repoPath = execSync("git rev-parse --show-toplevel", { encoding: "utf8" }).trim();
+  branch   = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf8" }).trim();
 } catch {
-  process.stdout.write("no");
+  process.exit(0);
 }
-JSEOF
-)
 
-if [ "$IS_TRACKED" != "yes" ]; then
-  # Fallback: pattern match for repos not yet in config (first-time / unconfigured)
-  REMOTE_URL="$(git remote get-url origin 2>/dev/null)"
-  REPO_NAME="$(basename "$REPO_PATH" 2>/dev/null)"
-  COMBINED="$(echo "$REMOTE_URL $REPO_NAME" | tr '[:upper:]' '[:lower:]')"
-  if ! echo "$COMBINED" | grep -qiE "degreepartner|admin.?cms|adminbackend|uniadv|/dt[^l]|/dtl|[_-]dt[^l]|[_-]dtl"; then
-    exit 0
-  fi
-  echo "[clickup-sync] Repo not in config — matched by name pattern: $REPO_NAME"
-  echo "[clickup-sync] Tip: re-run install.sh to add this repo explicitly."
-else
-  echo "[clickup-sync] Detected tracked repo: $REPO_PATH"
-fi
+// Normalize path separators (Windows → forward slash for comparison)
+const normRepo = repoPath.replace(/\\/g, "/").toLowerCase();
 
-while read local_ref local_sha remote_ref remote_sha; do
-  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
-    FROM_REF="HEAD~5"
-  else
-    FROM_REF="$remote_sha"
-  fi
-  TO_REF="$local_sha"
+// ── Check config.json TRACKED_REPOS ──────────────────────────────────────────
+let cfg = {};
+try { cfg = JSON.parse(readFileSync(CONFIG_FILE, "utf8")); } catch {}
 
-  node "$AGENT_SCRIPT" "$REPO_PATH" "$BRANCH" "$FROM_REF" "$TO_REF" &
-done
+const tracked = (cfg.TRACKED_REPOS || []).map(p => p.replace(/\\/g, "/").toLowerCase());
+const isTracked = tracked.some(p => normRepo === p || normRepo.startsWith(p + "/"));
 
-wait
-exit 0
+if (!isTracked) {
+  // Fallback: keyword match on repo name / remote URL
+  let remoteUrl = "";
+  try { remoteUrl = execSync("git remote get-url origin", { encoding: "utf8" }).trim(); } catch {}
+  const combined = (remoteUrl + " " + path.basename(repoPath)).toLowerCase();
+  const pattern = /degreepartner|admin.?cms|adminbackend|uniadv|\/dt(?!l)|\/dtl|[_\-]dt(?!l)|[_\-]dtl/i;
+  if (!pattern.test(combined)) process.exit(0);
+  console.log(`[clickup-sync] Matched by keyword: ${path.basename(repoPath)}`);
+  console.log(`[clickup-sync] Tip: re-run install to register this repo explicitly.`);
+} else {
+  console.log(`[clickup-sync] Detected tracked repo: ${repoPath}`);
+}
+
+// ── Read push refs from stdin ─────────────────────────────────────────────────
+// Git passes: <local-ref> <local-sha> <remote-ref> <remote-sha>  per line via stdin
+import { createInterface } from "readline";
+
+const rl = createInterface({ input: process.stdin });
+const procs = [];
+
+rl.on("line", line => {
+  const parts = line.trim().split(/\s+/);
+  if (parts.length < 4) return;
+  const [, localSha, , remoteSha] = parts;
+  const fromRef = remoteSha === "0000000000000000000000000000000000000000" ? "HEAD~5" : remoteSha;
+  const toRef   = localSha;
+
+  const child = spawn(process.execPath, [AGENT_SCRIPT, repoPath, branch, fromRef, toRef], {
+    detached: true,
+    stdio: "inherit",
+  });
+  child.unref();
+  procs.push(child);
+});
+
+rl.on("close", () => process.exit(0));
