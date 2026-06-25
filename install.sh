@@ -17,7 +17,7 @@ echo ""
 echo "  Agent: $AGENT_DIR"
 echo ""
 
-chmod +x "$GLOBAL_HOOKS_DIR/post-push" "$CC_HOOK"
+chmod +x "$GLOBAL_HOOKS_DIR/pre-push" "$CC_HOOK"
 
 # ── 1. Ask which repos this developer works on ────────────────────────────────
 echo "── Step 1: Configure your repos ────────────────"
