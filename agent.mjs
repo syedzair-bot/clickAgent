@@ -434,7 +434,11 @@ async function main() {
       .replace(/^(feat|fix|chore|refactor|docs|test|style|ci|build|perf)\(?[^)]*\)?:\s*/i, "")
       .slice(0, 60);
     const searchResults = await searchTasks(keywords);
-    for (const t of searchResults.slice(0, 3)) {
+    // Only show tasks that belong to the detected app (parent matches app task ID)
+    const filtered = detectedApp
+      ? searchResults.filter(t => t.parent === detectedApp.id || t.id === detectedApp.id)
+      : searchResults;
+    for (const t of filtered.slice(0, 3)) {
       if (!candidates.find(c => c.task.id === t.id)) {
         candidates.push({ task: t, how: "search match" });
       }
