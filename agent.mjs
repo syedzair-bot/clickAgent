@@ -149,13 +149,15 @@ function statusFromBranch(branch) {
   return "in progress";
 }
 
-// ── Prompt (interactive) — reads from /dev/tty so it works inside git hooks ──
-import { openSync, createReadStream } from "fs";
+// ── Prompt (interactive) — opens the terminal directly, works inside git hooks ─
+import { createReadStream } from "fs";
+
+const TTY_PATH = process.platform === "win32" ? "\\\\.\\CON" : "/dev/tty";
 
 let _rl = null;
 function getRL() {
   if (!_rl) {
-    const tty = createReadStream("/dev/tty");
+    const tty = createReadStream(TTY_PATH);
     _rl = readline.createInterface({ input: tty, output: process.stdout, terminal: false });
   }
   return _rl;

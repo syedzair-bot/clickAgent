@@ -46,21 +46,28 @@ if (!isTracked) {
 
 // ── Read push refs from stdin (git sends one line per ref being pushed) ───────
 // Format: <local-ref> <local-sha1> <remote-ref> <remote-sha1>
+// Collect all refs first, then run agent synchronously so prompts appear in terminal.
+const { spawnSync } = require("child_process");
 const rl = createInterface({ input: process.stdin });
+const refs = [];
 
 rl.on("line", function(line) {
   const parts = line.trim().split(/\s+/);
   if (parts.length < 4) return;
   const localSha  = parts[1];
   const remoteSha = parts[3];
-  const fromRef   = remoteSha === "0000000000000000000000000000000000000000" ? "HEAD~5" : remoteSha;
-  const toRef     = localSha;
-
-  const child = spawn(process.execPath, [AGENT_SCRIPT, repoPath, branch, fromRef, toRef], {
-    detached: true,
-    stdio: "inherit",
+  refs.push({
+    fromRef: remoteSha === "0000000000000000000000000000000000000000" ? "HEAD~5" : remoteSha,
+    toRef: localSha,
   });
-  child.unref();
 });
 
-rl.on("close", function() { process.exit(0); });
+rl.on("close", function() {
+  for (const { fromRef, toRef } of refs) {
+    // Run synchronously so interactive prompts appear in the terminal
+    spawnSync(process.execPath, [AGENT_SCRIPT, repoPath, branch, fromRef, toRef], {
+      stdio: "inherit",
+    });
+  }
+  process.exit(0);
+});
