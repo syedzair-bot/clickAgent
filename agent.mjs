@@ -22,6 +22,13 @@ const API_KEY = config.CLICKUP_API_KEY;
 const TEAM_ID = config.CLICKUP_TEAM_ID;
 const BASE_URL = "https://api.clickup.com/api/v2";
 
+// Top-level app tasks — always shown as pinned options
+const APP_TASKS = [
+  { label: "AdminCMS", id: "86d2k288x", url: "https://app.clickup.com/t/90161564878/86d2k288x" },
+  { label: "DT",       id: "86d2k283b", url: "https://app.clickup.com/t/90161564878/86d2k283b" },
+  { label: "DTL",      id: "86d2k2808", url: "https://app.clickup.com/t/90161564878/86d2k2808" },
+];
+
 // Known task IDs — keyword → ClickUp task ID
 const KNOWN_TASKS = {
   AdminCMS:        "86d2k288x",
@@ -33,6 +40,7 @@ const KNOWN_TASKS = {
   "Lead Ops":      "86d2k2b32",
   "Lead Module":   "86d2k2br1",
   DegrePartner:    "86d2k283b",
+  DTL:             "86d2k2808",
   referral:        "86d2k283b",
   onboarding:      "86d2k283b",
 };
@@ -446,10 +454,18 @@ async function main() {
         console.log(`       ID: ${c.task.id}  |  Status: ${c.task.status?.status ?? "unknown"}  |  Match: ${c.how}`);
         console.log(`       URL: https://app.clickup.com/t/${c.task.id}\n`);
       });
-      console.log(`  [N] Create a brand-new task`);
+
+      // Always show the 3 app-level tasks as pinned options
+      const appOffset = candidates.length;
+      console.log(`  ── App-level tasks ──`);
+      APP_TASKS.forEach((a, idx) => {
+        console.log(`  [${appOffset + idx + 1}] ${a.label}  |  ${a.url}`);
+      });
+      console.log(`\n  [N] Create a brand-new task (will ask which app)`);
       console.log(`  [S] Skip this commit\n`);
 
-      const pick = await prompt(`👉 Select existing task [1-${candidates.length}], N for new, S to skip: `);
+      const totalOptions = candidates.length + APP_TASKS.length;
+      const pick = await prompt(`👉 Select task [1-${totalOptions}], N for new, S to skip: `);
 
       if (pick.toLowerCase() === "s") {
         console.log(`   ⏭  Skipped.\n`); continue;
@@ -458,13 +474,23 @@ async function main() {
       } else {
         const idx = parseInt(pick) - 1;
         if (idx >= 0 && idx < candidates.length) {
+          // Picked a search-matched task
           chosenTask = candidates[idx].task;
           console.log(`   ✓ Using: "${chosenTask.name}"\n`);
-
-          // Ask what kind of update
           console.log(`  What type of change is this commit?`);
-          console.log(`  [1] Modification / rework of existing task → add comment only`);
-          console.log(`  [2] New feature / sub-feature → create subtask under this task\n`);
+          console.log(`  [1] Modification / rework → add comment only`);
+          console.log(`  [2] New sub-feature → create subtask under this task\n`);
+          const updateType = await prompt(`👉 Choose [1/2]: `);
+          action = updateType === "2" ? "subtask" : "comment";
+        } else if (idx >= candidates.length && idx < candidates.length + APP_TASKS.length) {
+          // Picked a pinned app-level task
+          const appTask = APP_TASKS[idx - candidates.length];
+          console.log(`   ✓ Using app task: "${appTask.label}"\n`);
+          chosenTask = await getTaskById(appTask.id);
+          if (!chosenTask) { console.log(`   ❌ Could not fetch app task.\n`); continue; }
+          console.log(`  What type of change is this commit?`);
+          console.log(`  [1] Modification / rework → add comment only`);
+          console.log(`  [2] New sub-feature → create subtask under ${appTask.label}\n`);
           const updateType = await prompt(`👉 Choose [1/2]: `);
           action = updateType === "2" ? "subtask" : "comment";
         } else {
@@ -472,9 +498,34 @@ async function main() {
         }
       }
     } else {
-      console.log(`🔍 No matching tasks found.\n`);
-      const yn = await prompt(`👉 Create a new ClickUp task for this commit? [Y/n]: `);
-      if (yn.toLowerCase() === "n") { console.log(`   ⏭  Skipped.\n`); continue; }
+      console.log(`🔍 No search matches found.\n`);
+      console.log(`  ── App-level tasks ──`);
+      APP_TASKS.forEach((a, idx) => {
+        console.log(`  [${idx + 1}] ${a.label}  |  ${a.url}`);
+      });
+      console.log(`\n  [N] Create a brand-new task (will ask which app)`);
+      console.log(`  [S] Skip this commit\n`);
+
+      const pick = await prompt(`👉 Select [1-${APP_TASKS.length}], N for new, S to skip: `);
+
+      if (pick.toLowerCase() === "s") {
+        console.log(`   ⏭  Skipped.\n`); continue;
+      } else if (pick.toLowerCase() === "n" || pick === "") {
+        chosenTask = null;
+      } else {
+        const idx = parseInt(pick) - 1;
+        if (idx >= 0 && idx < APP_TASKS.length) {
+          const appTask = APP_TASKS[idx];
+          chosenTask = await getTaskById(appTask.id);
+          if (!chosenTask) { console.log(`   ❌ Could not fetch app task.\n`); continue; }
+          console.log(`   ✓ Using app task: "${appTask.label}"\n`);
+          console.log(`  What type of change is this commit?`);
+          console.log(`  [1] Modification / rework → add comment only`);
+          console.log(`  [2] New sub-feature → create subtask under ${appTask.label}\n`);
+          const updateType = await prompt(`👉 Choose [1/2]: `);
+          action = updateType === "2" ? "subtask" : "comment";
+        }
+      }
     }
 
     // ── Execute chosen action ─────────────────────────────────────────────────
@@ -500,25 +551,55 @@ async function main() {
       console.log(`   🔗 https://app.clickup.com/t/${subtask.id}\n`);
 
     } else {
-      // Brand-new task
-      const defaultList = await getDefaultList();
+      // Brand-new task — ask which app it belongs to
+      console.log(`\n📋 Which app does this task belong to?\n`);
+      APP_TASKS.forEach((a, idx) => {
+        console.log(`  [${idx + 1}] ${a.label}`);
+      });
+      console.log(`  [${APP_TASKS.length + 1}] None of the above (create standalone)\n`);
 
-      // Ask for task details
-      console.log(`\n📋 Let's set up the new task:\n`);
-      const customName = await prompt(`   Task name [press Enter to use commit message]: `);
-      const taskName   = customName || `[${repoName}] ${commit.message.slice(0, 80)}`;
+      const appPick   = await prompt(`👉 Choose app [1-${APP_TASKS.length + 1}]: `);
+      const appIdx    = parseInt(appPick) - 1;
+      const parentApp = (appIdx >= 0 && appIdx < APP_TASKS.length) ? APP_TASKS[appIdx] : null;
+
+      console.log(`\n   Task name [press Enter to use commit message]: `);
+      const customName  = await prompt(`   > `);
+      const taskName    = customName || `[${repoName}] ${commit.message.slice(0, 80)}`;
 
       console.log(`   Priority: [1] Urgent  [2] High  [3] Normal  [4] Low`);
-      const priInput   = await prompt(`   Choose priority [default: 3]: `);
-      const priority   = [1,2,3,4].includes(parseInt(priInput)) ? parseInt(priInput) : 3;
+      const priInput  = await prompt(`   Choose priority [default: 3]: `);
+      const priority  = [1,2,3,4].includes(parseInt(priInput)) ? parseInt(priInput) : 3;
 
       const description = formatDescription(commit, repoName, branch, prompts);
-      const newTask     = await createTask(defaultList.id, taskName, description, repoName, priority);
-      await updateStatus(newTask.id, targetStatus);
 
-      console.log(`\n   ✨ New task created: "${newTask.name}"`);
-      console.log(`   📌 Status → "${targetStatus}"`);
-      console.log(`   🔗 https://app.clickup.com/t/${newTask.id}\n`);
+      if (parentApp) {
+        // Create as subtask under the chosen app task
+        console.log(`\n   Creating subtask under ${parentApp.label}...`);
+        const parentTask = await getTaskById(parentApp.id);
+        if (!parentTask) throw new Error(`Could not fetch ${parentApp.label} task`);
+        const listId = parentTask.list?.id;
+        if (!listId) throw new Error(`No list found for ${parentApp.label}`);
+        const newTask = await cuPost(`/list/${listId}/task`, {
+          name: taskName,
+          description,
+          parent: parentApp.id,
+          status: "in progress",
+          priority,
+          tags: [repoName.toLowerCase()],
+        });
+        await updateStatus(newTask.id, targetStatus);
+        console.log(`\n   ✨ Subtask created under ${parentApp.label}: "${newTask.name}"`);
+        console.log(`   📌 Status → "${targetStatus}"`);
+        console.log(`   🔗 https://app.clickup.com/t/${newTask.id}\n`);
+      } else {
+        // Standalone task
+        const defaultList = await getDefaultList();
+        const newTask     = await createTask(defaultList.id, taskName, description, repoName, priority);
+        await updateStatus(newTask.id, targetStatus);
+        console.log(`\n   ✨ New task created: "${newTask.name}"`);
+        console.log(`   📌 Status → "${targetStatus}"`);
+        console.log(`   🔗 https://app.clickup.com/t/${newTask.id}\n`);
+      }
     }
   }
 
