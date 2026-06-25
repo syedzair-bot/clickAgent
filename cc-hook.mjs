@@ -12,6 +12,7 @@ import { readFileSync } from "fs";
 import { execSync, spawn } from "child_process";
 import path from "path";
 import os from "os";
+import { fileURLToPath } from "url";
 
 const raw = readFileSync("/dev/stdin", "utf8").trim();
 if (!raw) process.exit(0);
@@ -38,7 +39,9 @@ try {
   branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: repoPath, encoding: "utf8" }).trim();
 } catch { branch = "unknown"; }
 
-const agentScript = path.join(os.homedir(), "DegrePartner", "clickup-agent", "agent.mjs");
+// Resolve agent path relative to this hook file — works wherever the repo is cloned
+const __dir      = path.dirname(fileURLToPath(import.meta.url));
+const agentScript = path.join(__dir, "agent.mjs");
 
 // Run agent detached so it doesn't block Claude Code
 const child = spawn("node", [agentScript, repoPath, branch, "HEAD~5", "HEAD"], {

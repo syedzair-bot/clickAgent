@@ -1,9 +1,11 @@
 #!/bin/bash
-# ClickUp Sync — post-push hook
-# Auto-installed into .git/hooks/post-push for each repo.
-# Runs after every `git push` and syncs commits to ClickUp.
+# ClickUp Sync — post-push hook (symlinked into .git/hooks/)
+# Resolves agent path dynamically — works regardless of where the repo is cloned.
 
-AGENT_SCRIPT="$HOME/DegrePartner/clickup-agent/agent.mjs"
+# Follow the symlink back to the agent directory
+HOOK_REAL="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+AGENT_DIR="$(dirname "$HOOK_REAL")"
+AGENT_SCRIPT="$AGENT_DIR/agent.mjs"
 
 if [ ! -f "$AGENT_SCRIPT" ]; then
   echo "[clickup-sync] Agent not found at $AGENT_SCRIPT — skipping"
@@ -13,7 +15,6 @@ fi
 REPO_PATH="$(git rev-parse --show-toplevel)"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
-# Read pushed refs from stdin (format: <local-ref> <local-sha1> <remote-ref> <remote-sha1>)
 while read local_ref local_sha remote_ref remote_sha; do
   if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
     FROM_REF="HEAD~5"
