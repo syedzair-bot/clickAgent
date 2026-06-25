@@ -3,90 +3,123 @@
 # Run once per machine after cloning this repo anywhere.
 # Usage: bash /path/to/clickup-agent/install.sh
 
-# Agent dir = wherever this script lives
 AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOOK_SRC="$AGENT_DIR/post-push"
+GLOBAL_HOOKS_DIR="$AGENT_DIR/global-hooks"
 CC_HOOK="$AGENT_DIR/cc-hook.mjs"
 CC_SETTINGS="$HOME/.claude/settings.json"
+CONFIG_FILE="$AGENT_DIR/config.json"
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"
 echo "║     ClickUp Git Sync — Global Installer      ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
-echo "  Agent location: $AGENT_DIR"
+echo "  Agent: $AGENT_DIR"
 echo ""
 
-chmod +x "$HOOK_SRC" "$CC_HOOK"
+chmod +x "$GLOBAL_HOOKS_DIR/post-push" "$CC_HOOK"
 
-# ── 1. Auto-detect repos by name (DT / DTL / AdminCMS) ───────────────────────
-echo "── Step 1: Finding repos ────────────────────────"
+# ── 1. Ask which repos this developer works on ────────────────────────────────
+echo "── Step 1: Configure your repos ────────────────"
+echo ""
+echo "  Which DegrePartner apps do you work on?"
+echo "  (You can select multiple — one per line, empty line to finish)"
+echo ""
+echo "  Common apps: DT · DTL · AdminCMS · UniAdv · Other"
+echo ""
 
-REPO_NAMES=("DT" "DTL" "AdminCMS")
-FOUND_REPOS=()
+REPO_PATHS=()
 
-for NAME in "${REPO_NAMES[@]}"; do
-  # Search common locations first, then broader search
-  LOCATIONS=(
-    "$HOME/$NAME"
-    "$HOME/Projects/$NAME"
-    "$HOME/Work/$NAME"
-    "$HOME/code/$NAME"
-    "$HOME/dev/$NAME"
-    "$HOME/DegrePartner/$NAME"
-  )
+while true; do
+  echo -n "  App name (or press Enter to finish): "
+  read -r APP_NAME < /dev/tty
+  [ -z "$APP_NAME" ] && break
 
-  FOUND=""
-  for LOC in "${LOCATIONS[@]}"; do
-    if [ -d "$LOC/.git" ]; then
-      FOUND="$LOC"
+  # Try to auto-detect path
+  SUGGESTED=""
+  LOWER_NAME=$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]')
+  for candidate in \
+    "$HOME/DegrePartner/$APP_NAME" \
+    "$HOME/Projects/$APP_NAME" \
+    "$HOME/code/$APP_NAME" \
+    "$HOME/$APP_NAME"; do
+    if [ -d "$candidate/.git" ]; then
+      SUGGESTED="$candidate"
       break
     fi
   done
 
-  # Fallback: search home directory (max depth 4)
-  if [ -z "$FOUND" ]; then
-    FOUND=$(find "$HOME" -maxdepth 4 -type d -name "$NAME" 2>/dev/null | while read d; do
-      [ -d "$d/.git" ] && echo "$d" && break
-    done | head -1)
-  fi
-
-  if [ -n "$FOUND" ]; then
-    echo "  ✓  Found $NAME → $FOUND"
-    FOUND_REPOS+=("$FOUND")
+  if [ -n "$SUGGESTED" ]; then
+    echo -n "  Path [$SUGGESTED]: "
   else
-    echo "  ⚠️  $NAME not found — enter path manually (or press Enter to skip):"
-    read -r MANUAL_PATH
-    if [ -n "$MANUAL_PATH" ] && [ -d "$MANUAL_PATH/.git" ]; then
-      echo "  ✓  Using $MANUAL_PATH"
-      FOUND_REPOS+=("$MANUAL_PATH")
-    else
-      echo "  –  Skipping $NAME"
-    fi
+    echo -n "  Full path to $APP_NAME repo: "
   fi
+  read -r USER_PATH < /dev/tty
+
+  # Use suggested if user pressed enter
+  FINAL_PATH="${USER_PATH:-$SUGGESTED}"
+
+  if [ -z "$FINAL_PATH" ]; then
+    echo "  ⚠️  No path provided — skipping $APP_NAME"
+    continue
+  fi
+
+  # Resolve to absolute path
+  FINAL_PATH="$(cd "$FINAL_PATH" 2>/dev/null && pwd || echo "$FINAL_PATH")"
+
+  if [ ! -d "$FINAL_PATH/.git" ]; then
+    echo "  ⚠️  No .git found at $FINAL_PATH — adding anyway (verify the path)"
+  else
+    echo "  ✓  $APP_NAME → $FINAL_PATH"
+  fi
+
+  REPO_PATHS+=("$FINAL_PATH")
 done
 
-# ── 2. Install git post-push hook into each found repo ───────────────────────
 echo ""
-echo "── Step 2: Git post-push hooks ─────────────────"
 
-for REPO in "${FOUND_REPOS[@]}"; do
-  HOOK_DEST="$REPO/.git/hooks/post-push"
-  [ -f "$HOOK_DEST" ] && [ ! -L "$HOOK_DEST" ] && mv "$HOOK_DEST" "$HOOK_DEST.bak"
-  ln -sf "$HOOK_SRC" "$HOOK_DEST"
-  chmod +x "$HOOK_DEST"
-  echo "  ✓  $REPO"
-done
+# ── 2. Save repo paths into config.json ──────────────────────────────────────
+echo "── Step 2: Saving config ────────────────────────"
 
-# ── 3. Patch post-push to use dynamic agent path ─────────────────────────────
-# Write the agent path into a local config so the hook finds it regardless of location
-cat > "$AGENT_DIR/.agent-path" << EOF
-$AGENT_DIR
-EOF
+node - "$CONFIG_FILE" "${REPO_PATHS[@]}" <<'JSEOF'
+const fs = require("fs");
+const file = process.argv[2];
+const paths = process.argv.slice(3);
+
+let cfg = {};
+try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
+
+cfg.TRACKED_REPOS = paths;
+fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
+console.log("  ✓  Tracked repos saved to config.json:");
+paths.forEach(p => console.log("       " + p));
+JSEOF
+
+echo ""
+
+# ── 3. Set global git hooks path ──────────────────────────────────────────────
+echo "── Step 3: Global git hook ──────────────────────"
+
+EXISTING=$(git config --global core.hooksPath 2>/dev/null)
+if [ -n "$EXISTING" ] && [ "$EXISTING" != "$GLOBAL_HOOKS_DIR" ]; then
+  echo "  ⚠️  core.hooksPath already set to: $EXISTING"
+  echo -n "  Overwrite with ClickUp hook? [y/N]: "
+  read -r CONFIRM < /dev/tty
+  [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ] && echo "  Skipped." || {
+    git config --global core.hooksPath "$GLOBAL_HOOKS_DIR"
+    echo "  ✓  Global hooks path set → $GLOBAL_HOOKS_DIR"
+  }
+else
+  git config --global core.hooksPath "$GLOBAL_HOOKS_DIR"
+  echo "  ✓  Global hooks path set → $GLOBAL_HOOKS_DIR"
+fi
+
+echo ""
+echo "  Hook fires on push from any of your configured repos."
 
 # ── 4. Wire Claude Code PostToolUse hook ─────────────────────────────────────
 echo ""
-echo "── Step 3: Claude Code global hook ─────────────"
+echo "── Step 4: Claude Code global hook ─────────────"
 
 if [ ! -f "$CC_SETTINGS" ]; then
   mkdir -p "$HOME/.claude"
@@ -94,7 +127,23 @@ if [ ! -f "$CC_SETTINGS" ]; then
 fi
 
 if grep -q "cc-hook" "$CC_SETTINGS" 2>/dev/null; then
-  echo "  ✓  Claude Code hook already installed"
+  node - "$CC_SETTINGS" "$CC_HOOK" <<'JSEOF'
+const fs = require("fs");
+const file = process.argv[2];
+const hookPath = process.argv[3];
+const s = JSON.parse(fs.readFileSync(file, "utf8"));
+s.hooks = s.hooks || {};
+s.hooks.PostToolUse = (s.hooks.PostToolUse || []).map(h => {
+  if (h.hooks?.some(x => x.command?.includes("cc-hook"))) {
+    h.hooks = h.hooks.map(x =>
+      x.command?.includes("cc-hook") ? { ...x, command: `node ${hookPath}` } : x
+    );
+  }
+  return h;
+});
+fs.writeFileSync(file, JSON.stringify(s, null, 2));
+console.log("  ✓  Claude Code hook updated →", hookPath);
+JSEOF
 else
   node - "$CC_SETTINGS" "$CC_HOOK" <<'JSEOF'
 const fs = require("fs");
@@ -103,23 +152,19 @@ const hookPath = process.argv[3];
 const s = JSON.parse(fs.readFileSync(file, "utf8"));
 s.hooks = s.hooks || {};
 s.hooks.PostToolUse = s.hooks.PostToolUse || [];
-const exists = s.hooks.PostToolUse.some(h => h.hooks?.some(x => x.command?.includes("cc-hook")));
-if (!exists) {
-  s.hooks.PostToolUse.push({
-    matcher: "Bash",
-    hooks: [{ type: "command", command: `node ${hookPath}`, timeout: 5 }]
-  });
-  fs.writeFileSync(file, JSON.stringify(s, null, 2));
-}
-console.log("  ✓  PostToolUse hook added →", hookPath);
+s.hooks.PostToolUse.push({
+  matcher: "Bash",
+  hooks: [{ type: "command", command: `node ${hookPath}`, timeout: 5 }]
+});
+fs.writeFileSync(file, JSON.stringify(s, null, 2));
+console.log("  ✓  Claude Code PostToolUse hook added →", hookPath);
 JSEOF
 fi
 
 echo ""
-echo "✅ Done! ClickUp sync active on ${#FOUND_REPOS[@]} repo(s)."
+echo "✅ Done."
 echo ""
-echo "   • git push (terminal)     → post-push hook"
-echo "   • git push (Claude Code)  → PostToolUse hook"
-echo ""
+echo "   Git pushes from your configured repos will trigger ClickUp sync."
+echo "   To add/change repos: re-run install.sh"
 echo "   To update API key: edit $AGENT_DIR/config.json"
 echo ""

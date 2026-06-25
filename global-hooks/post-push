@@ -1,0 +1,59 @@
+#!/bin/bash
+# Global post-push hook — fires on every git push on this machine.
+# Reads tracked repo paths from config.json (set during install.sh).
+
+HOOK_REAL="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+AGENT_DIR="$(dirname "$(dirname "$HOOK_REAL")")"
+AGENT_SCRIPT="$AGENT_DIR/agent.mjs"
+CONFIG_FILE="$AGENT_DIR/config.json"
+
+if [ ! -f "$AGENT_SCRIPT" ]; then
+  exit 0
+fi
+
+REPO_PATH="$(git rev-parse --show-toplevel 2>/dev/null)"
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+
+# ── Check if this repo is in the tracked list ─────────────────────────────────
+IS_TRACKED=$(node - "$CONFIG_FILE" "$REPO_PATH" <<'JSEOF'
+const fs = require("fs");
+const [,, configFile, repoPath] = process.argv;
+try {
+  const cfg = JSON.parse(fs.readFileSync(configFile, "utf8"));
+  const tracked = cfg.TRACKED_REPOS || [];
+  // Match exact path or if the repo path starts with a tracked path
+  const match = tracked.some(p => repoPath === p || repoPath.startsWith(p + "/"));
+  process.stdout.write(match ? "yes" : "no");
+} catch {
+  process.stdout.write("no");
+}
+JSEOF
+)
+
+if [ "$IS_TRACKED" != "yes" ]; then
+  # Fallback: pattern match for repos not yet in config (first-time / unconfigured)
+  REMOTE_URL="$(git remote get-url origin 2>/dev/null)"
+  REPO_NAME="$(basename "$REPO_PATH" 2>/dev/null)"
+  COMBINED="$(echo "$REMOTE_URL $REPO_NAME" | tr '[:upper:]' '[:lower:]')"
+  if ! echo "$COMBINED" | grep -qiE "degreepartner|admin.?cms|adminbackend|uniadv|/dt[^l]|/dtl|[_-]dt[^l]|[_-]dtl"; then
+    exit 0
+  fi
+  echo "[clickup-sync] Repo not in config — matched by name pattern: $REPO_NAME"
+  echo "[clickup-sync] Tip: re-run install.sh to add this repo explicitly."
+else
+  echo "[clickup-sync] Detected tracked repo: $REPO_PATH"
+fi
+
+while read local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    FROM_REF="HEAD~5"
+  else
+    FROM_REF="$remote_sha"
+  fi
+  TO_REF="$local_sha"
+
+  node "$AGENT_SCRIPT" "$REPO_PATH" "$BRANCH" "$FROM_REF" "$TO_REF" &
+done
+
+wait
+exit 0
