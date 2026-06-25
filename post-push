@@ -1,0 +1,30 @@
+#!/bin/bash
+# ClickUp Sync — post-push hook
+# Auto-installed into .git/hooks/post-push for each repo.
+# Runs after every `git push` and syncs commits to ClickUp.
+
+AGENT_SCRIPT="$HOME/DegrePartner/clickup-agent/agent.mjs"
+
+if [ ! -f "$AGENT_SCRIPT" ]; then
+  echo "[clickup-sync] Agent not found at $AGENT_SCRIPT — skipping"
+  exit 0
+fi
+
+REPO_PATH="$(git rev-parse --show-toplevel)"
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
+# Read pushed refs from stdin (format: <local-ref> <local-sha1> <remote-ref> <remote-sha1>)
+while read local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    FROM_REF="HEAD~5"
+  else
+    FROM_REF="$remote_sha"
+  fi
+  TO_REF="$local_sha"
+
+  echo "[clickup-sync] Syncing $BRANCH ($FROM_REF..$TO_REF)"
+  node "$AGENT_SCRIPT" "$REPO_PATH" "$BRANCH" "$FROM_REF" "$TO_REF" &
+done
+
+wait
+exit 0
