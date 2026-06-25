@@ -116,7 +116,11 @@ async function createTask(listId, name, description, repoLabel, priority = 3) {
 }
 
 async function createSubtask(parentTaskId, name, description) {
-  return cuPost(`/task`, {
+  const parent = await getTaskById(parentTaskId);
+  if (!parent) throw new Error(`Parent task ${parentTaskId} not found`);
+  const listId = parent.list?.id;
+  if (!listId) throw new Error(`Could not resolve list for parent task ${parentTaskId}`);
+  return cuPost(`/list/${listId}/task`, {
     name,
     description,
     parent: parentTaskId,
